@@ -1,0 +1,14 @@
+{
+    "mcpServers": {
+        "csvinfo": {
+            "type": "sse",
+            "url": "http://localhost:8000/sse",
+            "roots": [
+                {
+                    "uri": "file:///home/miky/mcp-project/tempdir",
+                    "name": "tempdir"
+                }
+            ]
+        }
+    }
+}

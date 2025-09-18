@@ -7,6 +7,7 @@ from mcp.types import Root, ListRootsResult
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
+import json
 
 from ollama import AsyncClient
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ load_dotenv()  # load environment variables from .env
 OLLAMA_HOST = config.ollama_host
 OLLAMA_PORT = config.ollama_port
 OLLAMA_MODEL = config.ollama_model
+
 
 def convert_tools_to_ollama_format(tool: mcp.Tool):
     """Convert MCP tool to Ollama tool format"""
@@ -37,23 +39,37 @@ def convert_tools_to_ollama_format(tool: mcp.Tool):
     }
 
 
-async def list_root_callback(context) -> ListRootsResult:
-    return ListRootsResult(
-        roots=[
-            Root(
-                uri=FileUrl("file:///home/miky/mcp-project/tempdir"),
-                name="Test Root 1",
-            )
-        ]
-    )
-
-
 class MCPClient:
-    def __init__(self):
+    def __init__(self, filepath: str = "mcp.json"):
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        self.ollama = AsyncClient(host=OLLAMA_HOST, port=OLLAMA_PORT)
+        self.ollama = AsyncClient(host=OLLAMA_HOST)
+        self.config = self.read_config(filepath)
+
+    def read_config(self, filepath: str) -> dict:
+        """Read configuration from mcp.json"""
+        with open(filepath, "r") as f:
+            data = json.load(f)
+
+        servers = data["mcpServers"]
+        first_server = servers[list(servers.keys())[0]]
+        return first_server
+
+    def get_config_url(self) -> str:
+        return self.config["url"]
+
+    async def list_root_callback(self, context) -> ListRootsResult:
+        roots = self.config["roots"]
+        return ListRootsResult(
+            roots=[
+                Root(
+                    uri=FileUrl(root["uri"]),
+                    name=root["name"],
+                )
+                for root in roots
+            ]
+        )
 
     async def connect_to_sse_server(self, url: str):
         """Connect to an MCP server over SSE
@@ -67,7 +83,7 @@ class MCPClient:
         self.stdio, self.write = sse_transport
         self.session = await self.exit_stack.enter_async_context(
             ClientSession(
-                self.stdio, self.write, list_roots_callback=list_root_callback
+                self.stdio, self.write, list_roots_callback=self.list_root_callback
             )
         )
 
@@ -124,7 +140,6 @@ class MCPClient:
 
         # Process response and handle tool calls
         final_text = []
-        print(response)
 
         message = response.message
         if message.content:
@@ -143,7 +158,6 @@ class MCPClient:
             # Continue conversation with tool results
             if message.content:
                 messages.append({"role": "assistant", "content": message.content})
-            print(result)
 
             if result.structuredContent is not None:
                 messages.append(
@@ -190,7 +204,6 @@ class MCPClient:
                 print("\n" + response)
 
             except Exception as e:
-                print(traceback.format_exc())
                 print(f"\nError: {str(e)}")
 
     async def cleanup(self):
@@ -199,19 +212,14 @@ class MCPClient:
 
 
 async def main():
-    # if len(sys.argv) < 2:
-    #     print("Usage: python client.py <path_to_server_script>")
-    #     sys.exit(1)
-
     client = MCPClient()
     try:
         # await client.connect_to_server(sys.argv[1])
-        await client.connect_to_sse_server("http://localhost:8000/sse")
+        await client.connect_to_sse_server(client.get_config_url())
         await client.chat_loop()
     finally:
         await client.cleanup()
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
