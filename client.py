@@ -12,7 +12,6 @@ import json
 from ollama import AsyncClient
 from dotenv import load_dotenv
 from appconfig import config
-import traceback
 
 load_dotenv()  # load environment variables from .env
 
@@ -21,7 +20,7 @@ OLLAMA_PORT = config.ollama_port
 OLLAMA_MODEL = config.ollama_model
 
 
-def convert_tools_to_ollama_format(tool: mcp.Tool):
+def convert_tools_to_ollama_format(tool: mcp.Tool) -> dict:
     """Convert MCP tool to Ollama tool format"""
     return {
         "type": "function",
@@ -126,7 +125,7 @@ class MCPClient:
         print("\nConnected to server with tools:", [tool.name for tool in tools])
 
     async def process_query(self, query: str) -> str:
-        """Process a query using Claude and available tools"""
+        """Process a query using Ollama and available tools"""
         assert self.session is not None, "Not connected to any MCP server"
         messages = [{"role": "user", "content": query}]
 
@@ -147,6 +146,7 @@ class MCPClient:
 
         elif message.tool_calls:
             tool_name = ""
+            result = None
             for tool in message.tool_calls:
                 tool_name = tool.function.name
                 tool_args = tool.function.arguments
@@ -158,7 +158,8 @@ class MCPClient:
             # Continue conversation with tool results
             if message.content:
                 messages.append({"role": "assistant", "content": message.content})
-
+            if result is None:
+                raise ValueError("Error doing tool call")
             if result.structuredContent is not None:
                 messages.append(
                     {

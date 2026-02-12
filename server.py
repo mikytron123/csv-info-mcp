@@ -13,6 +13,10 @@ allowed_directories: Optional[list[str]] = None
 
 
 async def get_directories(ctx: Context) -> list[str]:
+    """Get directories for searching CSVs,
+    use list root callback if the client is capable,
+    Otherwise fall back to cli arguments
+    """
     global allowed_directories
 
     if allowed_directories is not None:
