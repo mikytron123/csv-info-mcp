@@ -1,15 +1,16 @@
-import sys
-from typing import Literal, Optional
-from mcp.server.fastmcp import FastMCP, Context
-from mcp.types import ClientCapabilities, RootsCapability
 import argparse
+import sys
 from pathlib import Path
+from typing import Literal, Optional
+
 import polars as pl
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ClientCapabilities, RootsCapability
 
 # Create an MCP server
 mcp = FastMCP("CSVInfo")
 
-allowed_directories: Optional[list[str]] = None
+allowed_directories: list[str] | None = None
 
 
 async def get_directories(ctx: Context) -> list[str]:
@@ -44,7 +45,7 @@ async def get_directories(ctx: Context) -> list[str]:
     )
 
 
-def find_file_in_allowed_dirs(file_path: str, allowed_dirs: list[str]) -> Optional[str]:
+def find_file_in_allowed_dirs(file_path: str, allowed_dirs: list[str]) -> str | None:
     """Search for the file in the allowed directories and return its full path if found."""
     for dir in allowed_dirs:
         potential_path = Path(dir) / file_path

@@ -1,16 +1,17 @@
 import asyncio
-from typing import Optional
-from contextlib import AsyncExitStack
-from pydantic import FileUrl
-import mcp
-from mcp.types import Root, ListRootsResult
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.sse import sse_client
 import json
+from contextlib import AsyncExitStack
+from typing import Optional
 
-from ollama import AsyncClient
+import mcp
 from dotenv import load_dotenv
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
+from mcp.types import ListRootsResult, Root
+from ollama import AsyncClient
+from pydantic import FileUrl
+
 from appconfig import config
 
 load_dotenv()  # load environment variables from .env
@@ -48,7 +49,7 @@ class MCPClient:
 
     def read_config(self, filepath: str) -> dict:
         """Read configuration from mcp.json"""
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             data = json.load(f)
 
         servers = data["mcpServers"]
