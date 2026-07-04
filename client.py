@@ -1,7 +1,6 @@
 import asyncio
 import json
 from contextlib import AsyncExitStack
-from typing import Optional
 
 import mcp
 from dotenv import load_dotenv
@@ -42,7 +41,7 @@ def convert_tools_to_ollama_format(tool: mcp.Tool) -> dict:
 class MCPClient:
     def __init__(self, filepath: str = "mcp.json"):
         # Initialize session and client objects
-        self.session: Optional[ClientSession] = None
+        self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()
         self.ollama = AsyncClient(host=OLLAMA_HOST)
         self.config = self.read_config(filepath)

@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import polars as pl
 from mcp.server.fastmcp import Context, FastMCP
