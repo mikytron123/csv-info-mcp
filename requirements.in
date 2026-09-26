@@ -1,0 +1,7 @@
+# Runtime dependencies
+environ-config
+mcp
+ollama
+polars
+pydantic
+python-dotenv
