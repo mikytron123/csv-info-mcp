@@ -1,6 +1,6 @@
 # Runtime dependencies
 environ-config
-mcp
+mcp>=2,<3
 ollama
 polars
 pydantic

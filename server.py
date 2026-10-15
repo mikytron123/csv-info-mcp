@@ -1,171 +1,120 @@
 import argparse
-import sys
 from pathlib import Path
 from typing import Literal
 
 import polars as pl
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ClientCapabilities, RootsCapability
+from mcp.server import MCPServer
 
-# Create an MCP server
-mcp = FastMCP("CSVInfo")
-
-allowed_directories: list[str] | None = None
+mcp = MCPServer("CSVInfo")
+allowed_directories: list[Path] = []
 
 
-async def get_directories(ctx: Context) -> list[str]:
-    """Get directories for searching CSVs,
-    use list root callback if the client is capable,
-    Otherwise fall back to cli arguments
-    """
-    global allowed_directories
+def find_file_in_allowed_dirs(file_path: str, allowed_dirs: list[Path]) -> Path | None:
+    """Find a relative file path within the configured directories."""
+    requested_path = Path(file_path)
+    if requested_path.is_absolute():
+        raise ValueError("file_path must be relative to a configured directory")
 
-    if allowed_directories is not None:
-        return allowed_directories
+    for directory in allowed_dirs:
+        try:
+            potential_path = (directory / requested_path).resolve(strict=True)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
 
-    cap = ctx.session.check_client_capability(
-        ClientCapabilities(roots=RootsCapability())
-    )
-    if cap:
-        list_roots = await ctx.session.list_roots()
-        dirs = [root.uri.path for root in list_roots.roots if root.uri.path is not None]
-        if len(dirs) == 0:
-            raise ValueError("No root directories available from client.")
-        allowed_directories = dirs
+        if potential_path.is_relative_to(directory) and potential_path.is_file():
+            return potential_path
 
-        return allowed_directories
-
-    args = parse_args()
-    if args.root_directory is not None:
-        allowed_directories = [args.root_directory[0]]
-        return allowed_directories
-
-    raise ValueError(
-        "No root directories available. Please provide a root directory using --root_directory argument or ensure the client supports RootsCapability."
-    )
-
-
-def find_file_in_allowed_dirs(file_path: str, allowed_dirs: list[str]) -> str | None:
-    """Search for the file in the allowed directories and return its full path if found."""
-    for dir in allowed_dirs:
-        potential_path = Path(dir) / file_path
-        if potential_path.exists() and potential_path.is_file():
-            return str(potential_path)
     return None
 
 
-def read_csv(file_path: str) -> pl.DataFrame:
-    """Reads a csv into a polars dataframe"""
-    df = pl.read_csv(str(file_path))
-    return df
+def get_csv_file(file_path: str) -> Path:
+    """Resolve a CSV path within the server's configured directories."""
+    if not allowed_directories:
+        raise RuntimeError(
+            "No CSV directories configured; start the server with --root-directory."
+        )
+
+    full_file_path = find_file_in_allowed_dirs(file_path, allowed_directories)
+    if full_file_path is None:
+        raise ValueError(f"CSV file not found in configured directories: {file_path}")
+    return full_file_path
+
+
+def read_csv(file_path: Path) -> pl.DataFrame:
+    """Read a CSV into a Polars dataframe."""
+    return pl.read_csv(file_path)
 
 
 @mcp.tool()
-async def get_csv_schema(file_path: str, ctx: Context) -> dict:
-    """Get the schema of a CSV file"""
-    try:
-        dirs = await get_directories(ctx)
-        full_file_path = find_file_in_allowed_dirs(file_path, dirs)
-        if full_file_path is None:
-            raise ValueError(f"File not found in allowed directories: {dirs}")
-        df = read_csv(full_file_path)
-        schema = {col: str(dtype) for col, dtype in df.schema.items()}
-        return schema
-    except Exception as e:
-        raise ValueError(f"Error getting CSV schema: {e}")
+async def get_csv_schema(file_path: str) -> dict[str, str]:
+    """Get the schema of a CSV file relative to a configured server directory."""
+    df = read_csv(get_csv_file(file_path))
+    return {col: str(dtype) for col, dtype in df.schema.items()}
 
 
 @mcp.tool()
-async def count_csv_columns(file_path: str, ctx: Context) -> int:
-    """Count the number of columns in a CSV file"""
-    try:
-        dirs = await get_directories(ctx)
-        full_file_path = find_file_in_allowed_dirs(file_path, dirs)
-        if full_file_path is None:
-            raise ValueError(f"File not found in allowed directories: {dirs}")
-        df = read_csv(full_file_path)
-        return len(df.columns)
-    except Exception as e:
-        raise ValueError(f"Error counting CSV rows: {e}")
+async def count_csv_columns(file_path: str) -> int:
+    """Count the columns in a CSV file relative to a configured server directory."""
+    df = read_csv(get_csv_file(file_path))
+    return len(df.columns)
 
 
 @mcp.tool()
-async def count_csv_rows(file_path: str, ctx: Context) -> int:
-    """Count the number of rows in a CSV file"""
-    try:
-        dirs = await get_directories(ctx)
-        full_file_path = find_file_in_allowed_dirs(file_path, dirs)
-        if full_file_path is None:
-            raise ValueError(f"File not found in allowed directories: {dirs}")
-        df = read_csv(full_file_path)
-        return len(df)
-    except Exception as e:
-        raise ValueError(f"Error counting CSV rows: {e}")
+async def count_csv_rows(file_path: str) -> int:
+    """Count the rows in a CSV file relative to a configured server directory."""
+    df = read_csv(get_csv_file(file_path))
+    return len(df)
 
 
 @mcp.tool()
-async def read_csv_columns(file_path: str, ctx: Context) -> list[str]:
-    """Read a CSV file and return its column names"""
-    try:
-        dirs = await get_directories(ctx)
-        full_file_path = find_file_in_allowed_dirs(file_path, dirs)
-        if full_file_path is None:
-            raise ValueError(f"File not found in allowed directories: {dirs}")
-        df = read_csv(full_file_path)
-        return df.columns
-    except Exception as e:
-        raise ValueError(f"Error reading CSV file: {e}")
+async def read_csv_columns(file_path: str) -> list[str]:
+    """Read column names from a CSV file relative to a configured server directory."""
+    df = read_csv(get_csv_file(file_path))
+    return df.columns
 
 
 def validate_directory_path(path: str) -> Path:
-    """
-    Validate and normalize directory path using pathlib
-
-    Args:
-        path: The directory path to validate
-
-    Returns:
-        Path object representing the validated absolute directory path
-
-    Raises:
-        ValueError: If the path doesn't exist or is not a directory
-    """
+    """Return the resolved path if it names an existing directory."""
     path_obj = Path(path)
-
     if not path_obj.exists():
         raise ValueError(f"Directory does not exist: {path}")
-
     if not path_obj.is_dir():
         raise ValueError(f"Path is not a directory: {path}")
-
     return path_obj.resolve()
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="FastMCP Server")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="CSVInfo MCP server")
     parser.add_argument(
+        "--root-directory",
         "--root_directory",
-        nargs=1,
-        required=False,
+        dest="root_directories",
+        nargs="+",
+        required=True,
         type=str,
-        help="Root directory for file operations",
+        help="Directory or directories the server may use for CSV files",
     )
-    parser.add_argument("-t", "--transport", type=str, help="Transport method")
+    parser.add_argument(
+        "-t",
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="stdio",
+        help="Transport method",
+    )
     return parser.parse_args()
 
 
-def main(transport: Literal["stdio", "sse", "streamable-http"]):
-    """Entry point for the direct execution server."""
+def main(
+    transport: Literal["stdio", "streamable-http"], root_directories: list[str]
+) -> None:
+    """Start the server with its filesystem access configured locally."""
+    global allowed_directories
+    allowed_directories = [
+        validate_directory_path(directory) for directory in root_directories
+    ]
     mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
     args = parse_args()
-
-    if args.transport not in ["stdio", "sse", "streamable-http"]:
-        print(
-            f"Error: Unsupported transport '{args.transport}'. Supported transports are 'stdio', 'sse', and 'streamable-http'."
-        )
-        sys.exit(1)
-
-    main(args.transport)
+    main(args.transport, args.root_directories)

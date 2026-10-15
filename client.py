@@ -1,196 +1,132 @@
 import asyncio
 import json
+import sys
 from contextlib import AsyncExitStack
+from typing import Any
 
-import mcp
 from dotenv import load_dotenv
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.types import ListRootsResult, Root
+from mcp import Client, StdioServerParameters
+from mcp.types import CallToolResult, TextContent, Tool
 from ollama import AsyncClient
-from pydantic import FileUrl
 
 from appconfig import config
 
-load_dotenv()  # load environment variables from .env
+load_dotenv()
 
 OLLAMA_HOST = config.ollama_host
 OLLAMA_PORT = config.ollama_port
 OLLAMA_MODEL = config.ollama_model
 
 
-def convert_tools_to_ollama_format(tool: mcp.Tool) -> dict:
-    """Convert MCP tool to Ollama tool format"""
+def convert_tools_to_ollama_format(tool: Tool) -> dict[str, Any]:
+    """Convert an MCP tool to Ollama's tool format."""
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": {
-                "required": tool.inputSchema["required"],
-                "properties": {
-                    k: {"type": v["type"]}
-                    for k, v in tool.inputSchema["properties"].items()
-                },
-            },
+            "parameters": tool.input_schema,
         },
     }
 
 
 class MCPClient:
     def __init__(self, filepath: str = "mcp.json"):
-        # Initialize session and client objects
-        self.session: ClientSession | None = None
+        self.client: Client | None = None
         self.exit_stack = AsyncExitStack()
         self.ollama = AsyncClient(host=OLLAMA_HOST)
         self.config = self.read_config(filepath)
 
-    def read_config(self, filepath: str) -> dict:
-        """Read configuration from mcp.json"""
-        with open(filepath) as f:
-            data = json.load(f)
+    def read_config(self, filepath: str) -> dict[str, Any]:
+        """Read configuration from mcp.json."""
+        with open(filepath) as config_file:
+            data = json.load(config_file)
 
         servers = data["mcpServers"]
-        first_server = servers[list(servers.keys())[0]]
-        return first_server
+        return servers[next(iter(servers))]
 
     def get_config_url(self) -> str:
-        return self.config["url"]
+        """Return the configured Streamable HTTP URL."""
+        url = self.config["url"]
+        if not isinstance(url, str):
+            raise ValueError("The configured MCP server URL must be a string")
+        return url
 
-    async def list_root_callback(self, context) -> ListRootsResult:
-        roots = self.config["roots"]
-        return ListRootsResult(
-            roots=[
-                Root(
-                    uri=FileUrl(root["uri"]),
-                    name=root["name"],
-                )
-                for root in roots
-            ]
-        )
-
-    async def connect_to_sse_server(self, url: str):
-        """Connect to an MCP server over SSE
-
-        Args:
-            url: URL of the SSE server
-        """
-        sse_transport = await self.exit_stack.enter_async_context(
-            sse_client(url, timeout=60)
-        )
-        self.stdio, self.write = sse_transport
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(
-                self.stdio, self.write, list_roots_callback=self.list_root_callback
+    async def connect_to_server(self, server: str | StdioServerParameters) -> None:
+        """Connect to an MCP server over Streamable HTTP or stdio."""
+        if isinstance(server, str) and server.endswith((".py", ".js")):
+            is_python = server.endswith(".py")
+            server = StdioServerParameters(
+                command=sys.executable if is_python else "node",
+                args=[server],
+                env=None,
             )
+
+        self.client = await self.exit_stack.enter_async_context(Client(server))
+        response = await self.client.list_tools()
+        print(
+            "\nConnected to server with tools:", [tool.name for tool in response.tools]
         )
 
-        await self.session.initialize()
+    @staticmethod
+    def get_tool_result_text(result: CallToolResult) -> str:
+        """Convert an MCP tool result to text for Ollama."""
+        if result.structured_content is not None:
+            return json.dumps(
+                result.structured_content, ensure_ascii=False, default=str
+            )
 
-        # List available tools
-        response = await self.session.list_tools()
-        tools = response.tools
-        print("\nConnected to server with tools:", [tool.name for tool in tools])
-
-    async def connect_to_server(self, server_script_path: str):
-        """Connect to an MCP server
-
-        Args:
-            server_script_path: Path to the server script (.py or .js)
-        """
-        is_python = server_script_path.endswith(".py")
-        is_js = server_script_path.endswith(".js")
-        if not (is_python or is_js):
-            raise ValueError("Server script must be a .py or .js file")
-
-        command = "python" if is_python else "node"
-        server_params = StdioServerParameters(
-            command=command, args=[server_script_path], env=None
-        )
-
-        stdio_transport = await self.exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        self.sse, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.sse, self.write)
-        )
-
-        await self.session.initialize()
-
-        # List available tools
-        response = await self.session.list_tools()
-        tools = response.tools
-        print("\nConnected to server with tools:", [tool.name for tool in tools])
+        text_content = [
+            item.text for item in result.content if isinstance(item, TextContent)
+        ]
+        if text_content:
+            return "\n".join(text_content)
+        if result.content:
+            raise ValueError("Unsupported content type from tool")
+        return "Tool returned no content"
 
     async def process_query(self, query: str) -> str:
-        """Process a query using Ollama and available tools"""
-        assert self.session is not None, "Not connected to any MCP server"
-        messages = [{"role": "user", "content": query}]
+        """Process a query using Ollama and available MCP tools."""
+        if self.client is None:
+            raise RuntimeError("Not connected to any MCP server")
 
-        response = await self.session.list_tools()
-
+        messages: list[dict[str, object]] = [{"role": "user", "content": query}]
+        response = await self.client.list_tools()
         ollama_tools = [convert_tools_to_ollama_format(tool) for tool in response.tools]
 
         response = await self.ollama.chat(
             model=OLLAMA_MODEL, messages=messages, tools=ollama_tools, think=False
         )
 
-        # Process response and handle tool calls
         final_text = []
-
         message = response.message
         if message.content:
             final_text.append(message.content)
 
-        elif message.tool_calls:
-            tool_name = ""
-            result = None
-            for tool in message.tool_calls:
-                tool_name = tool.function.name
-                tool_args = tool.function.arguments
-
-                # Execute tool call
-                result = await self.session.call_tool(tool_name, tool_args)  # type: ignore
+        if message.tool_calls:
+            messages.append(message.model_dump(exclude_none=True))
+            for tool_call in message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = tool_call.function.arguments
+                result = await self.client.call_tool(tool_name, tool_args)
                 final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
-
-            # Continue conversation with tool results
-            if message.content:
-                messages.append({"role": "assistant", "content": message.content})
-            if result is None:
-                raise ValueError("Error doing tool call")
-            if result.structuredContent is not None:
                 messages.append(
                     {
                         "role": "tool",
-                        "content": str(result.structuredContent["result"]),
+                        "content": self.get_tool_result_text(result),
                         "tool_name": tool_name,
                     }
                 )
 
-            elif isinstance(result.content[0], mcp.types.TextContent):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "content": result.content[0].text,
-                        "tool_name": tool_name,
-                    }
-                )
-            else:
-                raise ValueError("Unsupported content type from tool")
-
-            print("Messages:", messages)
             response = await self.ollama.chat(
                 model=OLLAMA_MODEL, messages=messages, think=False
             )
-
             final_text.append(response.message.content)
 
         return "\n".join(final_text)
 
-    async def chat_loop(self):
-        """Run an interactive chat loop"""
+    async def chat_loop(self) -> None:
+        """Run an interactive chat loop."""
         print("\nMCP Client Started!")
         print("Type your queries or 'quit' to exit.")
 
@@ -207,16 +143,15 @@ class MCPClient:
             except Exception as e:
                 print(f"\nError: {str(e)}")
 
-    async def cleanup(self):
-        """Clean up resources"""
+    async def cleanup(self) -> None:
+        """Clean up resources."""
         await self.exit_stack.aclose()
 
 
-async def main():
+async def main() -> None:
     client = MCPClient()
     try:
-        # await client.connect_to_server(sys.argv[1])
-        await client.connect_to_sse_server(client.get_config_url())
+        await client.connect_to_server(client.get_config_url())
         await client.chat_loop()
     finally:
         await client.cleanup()
